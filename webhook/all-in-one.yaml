@@ -1,0 +1,124 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: webhook
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webhook-code
+  namespace: webhook
+data:
+  webhook.py: |
+    from flask import Flask, request, jsonify
+    import subprocess, json, time
+
+    app = Flask(__name__)
+
+    @app.route('/', methods=['POST'])
+    def webhook():
+      data = request.json or {}
+      print(json.dumps(data, indent=2))
+      rule = data.get("rule", "")
+      pod  = data.get("output_fields", {}).get("k8s.pod.name", "")
+      ns   = data.get("output_fields", {}).get("k8s.ns.name", "default")
+      if "shell" in rule.lower() and pod:
+        print(f"[+] Will delete pod {pod} in ns {ns}")
+        time.sleep(2)
+        try:
+          subprocess.run(["kubectl","delete","pod",pod,"-n",ns,"--ignore-not-found"], check=True)
+          return jsonify({"status":"deleted","pod":pod,"ns":ns}), 200
+        except Exception as e:
+          print(f"[!] Delete failed: {e}")
+          return jsonify({"status":"error","message":str(e)}), 500
+      return jsonify({"status":"ignored"}), 200
+
+    if __name__ == '__main__':
+      app.run(host="0.0.0.0", port=5000)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webhook-server
+  namespace: webhook
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webhook-server
+  template:
+    metadata:
+      labels:
+        app: webhook-server
+    spec:
+      serviceAccountName: webhook-sa
+      containers:
+      - name: webhook-server
+        image: python:3.9
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh","-c"]
+        args:
+          - |
+            set -e
+            pip install --no-cache-dir flask && \
+            apt-get update && apt-get install -y curl ca-certificates && \
+            curl -fsSL https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl && \
+            chmod +x /usr/local/bin/kubectl && \
+            python /app/webhook.py
+        ports:
+        - containerPort: 5000
+        readinessProbe:
+          tcpSocket: { port: 5000 }
+          initialDelaySeconds: 3
+          periodSeconds: 3
+        livenessProbe:
+          tcpSocket: { port: 5000 }
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+      volumes:
+      - name: app-code
+        configMap:
+          name: webhook-code
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webhook-service
+  namespace: webhook
+spec:
+  selector:
+    app: webhook-server
+  ports:
+  - port: 5000
+    targetPort: 5000
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: webhook-sa
+  namespace: webhook
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: webhook-role
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get","list","watch","delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: webhook-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: webhook-role
+subjects:
+- kind: ServiceAccount
+  name: webhook-sa
+  namespace: webhook

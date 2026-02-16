@@ -1,0 +1,11 @@
+customRules:
+  configMap: falco-custom-rules
+
+falco:
+  jsonOutput: true
+
+falcosidekick:
+  enabled: true
+  config:
+    webhook:
+      address: "http://webhook-service.webhook.svc.cluster.local:5000/"

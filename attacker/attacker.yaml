@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ubuntu-attacker
+  namespace: default
+spec:
+  containers:
+  - name: ubuntu
+    image: ubuntu
+    command: ["sleep"]
+    args: ["3600"]
